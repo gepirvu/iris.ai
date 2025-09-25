@@ -324,6 +324,13 @@
                         </div>
                     </div>
 
+                    <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem;">
+                            <input type="checkbox" id="generate-answer" style="transform: scale(1.2);">
+                            <span>🤖 Generate AI Answer</span>
+                        </label>
+                    </div>
+
                     <button id="search-btn" class="search-btn" onclick="performSearch()">
                         🔍 Search Patents
                     </button>
@@ -337,7 +344,22 @@
 
                 <!-- Results -->
                 <div class="results" id="results">
-                    <div class="answer-section">
+                    <!-- LLM Generated Answer Section -->
+                    <div class="llm-answer-section" id="llm-answer-section" style="display: none;">
+                        <h3 class="section-title">🤖 AI-Generated Answer</h3>
+                        <div class="answer-section" style="background: #f0f9ff; border-color: #0ea5e9;">
+                            <div class="answer-text" id="llm-answer-text"></div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px;">
+                                <div class="confidence-badge" id="llm-confidence-badge"></div>
+                                <div style="font-size: 0.8rem; color: #6b7280;">
+                                    Citations: <span id="llm-citations-list"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Original Chunk Results Section -->
+                    <div class="answer-section" id="chunk-results-section">
                         <div class="answer-text" id="answer-text"></div>
                         <div class="confidence-badge" id="confidence-badge"></div>
                     </div>
@@ -417,6 +439,7 @@
 
         async function performSearch() {
           const query = document.getElementById('search-input').value.trim();
+          const generateAnswer = document.getElementById('generate-answer').checked;
 
           if (!query) {
             showError('Please enter a question');
@@ -428,7 +451,7 @@
             return;
           }
 
-          showLoading(true);
+          showLoading(true, generateAnswer);
           hideError();
 
           try {
@@ -441,6 +464,7 @@
                 query,
                 patent_id: selectedPatent.patent_id,
                 top_k: 5,
+                generate_answer: generateAnswer,
               }),
             });
 
@@ -466,6 +490,8 @@
 
         function showResults(response) {
           const resultsDiv = document.getElementById('results');
+          const llmAnswerSection = document.getElementById('llm-answer-section');
+          const chunkResultsSection = document.getElementById('chunk-results-section');
           const answerText = document.getElementById('answer-text');
           const confidenceBadge = document.getElementById('confidence-badge');
           const sourcesList = document.getElementById('sources-list');
@@ -476,10 +502,29 @@
             return;
           }
 
-          const best = response.results[0];
-          answerText.textContent = best.text || 'No text available.';
-          confidenceBadge.textContent = `Score: ${(best.score ?? 0).toFixed(3)}`;
+          // Show LLM answer if available
+          if (response.llm_answer) {
+            const llmAnswerText = document.getElementById('llm-answer-text');
+            const llmConfidenceBadge = document.getElementById('llm-confidence-badge');
+            const llmCitationsList = document.getElementById('llm-citations-list');
 
+            llmAnswerText.textContent = response.llm_answer;
+            llmConfidenceBadge.textContent = `Confidence: ${(response.confidence * 100).toFixed(1)}%`;
+            llmCitationsList.textContent = response.citations ? response.citations.join(', ') : 'None';
+
+            llmAnswerSection.style.display = 'block';
+            chunkResultsSection.style.display = 'none'; // Hide chunk results when showing LLM answer
+          } else {
+            // Show original chunk results
+            const best = response.results[0];
+            answerText.textContent = best.text || 'No text available.';
+            confidenceBadge.textContent = `Score: ${(best.score ?? 0).toFixed(3)}`;
+
+            llmAnswerSection.style.display = 'none';
+            chunkResultsSection.style.display = 'block';
+          }
+
+          // Always show sources section
           sourcesList.innerHTML = '';
           response.results.forEach((item) => {
             const sourceCard = document.createElement('div');
@@ -504,14 +549,18 @@
           document.getElementById('empty-state').style.display = 'none';
         }
 
-        function showLoading(show) {
+        function showLoading(show, generateAnswer = false) {
           const loading = document.getElementById('loading');
           const searchBtn = document.getElementById('search-btn');
+          const loadingText = loading.querySelector('p');
 
           loading.style.display = show ? 'block' : 'none';
           searchBtn.disabled = show;
 
           if (show) {
+            loadingText.textContent = generateAnswer
+              ? 'Searching patents and generating AI answer...'
+              : 'Searching patents...';
             document.getElementById('results').style.display = 'none';
           }
         }

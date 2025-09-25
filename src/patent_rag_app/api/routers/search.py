@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from patent_rag_app.llm.answer_generator import AnswerGenerator
 from patent_rag_app.retrieval.service import PatentRetrievalService
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -14,6 +15,7 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=3, description="Search term")
     patent_id: str | None = Field(default=None, description="Restrict search to this patent")
     top_k: int = Field(default=5, ge=1, le=20, description="Number of results to return")
+    generate_answer: bool = Field(default=False, description="Generate LLM answer from retrieved chunks")
 
 
 class SourceItem(BaseModel):
@@ -28,16 +30,24 @@ class SourceItem(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     results: list[SourceItem]
+    llm_answer: str | None = None
+    citations: list[str] | None = None
+    confidence: float | None = None
 
 
 def get_retrieval_service() -> PatentRetrievalService:
     return PatentRetrievalService()
 
 
+def get_answer_generator() -> AnswerGenerator:
+    return AnswerGenerator()
+
+
 @router.post("/chunks", response_model=SearchResponse)
 def search_chunks(
     payload: SearchRequest,
     service: PatentRetrievalService = Depends(get_retrieval_service),
+    answer_generator: AnswerGenerator = Depends(get_answer_generator),
 ) -> SearchResponse:
     results = service.search(
         payload.query,
@@ -59,5 +69,22 @@ def search_chunks(
         for result in results
     ]
 
-    return SearchResponse(query=payload.query, results=items)
+    # Generate LLM answer if requested
+    llm_answer = None
+    citations = None
+    confidence = None
+
+    if payload.generate_answer and results:
+        answer_data = answer_generator.generate_answer(payload.query, results)
+        llm_answer = answer_data["answer"]
+        citations = answer_data["citations"]
+        confidence = answer_data["confidence"]
+
+    return SearchResponse(
+        query=payload.query,
+        results=items,
+        llm_answer=llm_answer,
+        citations=citations,
+        confidence=confidence,
+    )
 
