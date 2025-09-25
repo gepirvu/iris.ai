@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patent RAG Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+            padding: 30px;
+        }
+
+        .patents-section {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 25px;
+        }
+
+        .search-section {
+            padding: 25px;
+        }
+
+        .section-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #374151;
+        }
+
+        .patent-card {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .patent-card:hover {
+            border-color: #4f46e5;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.1);
+        }
+
+        .patent-card.selected {
+            border-color: #4f46e5;
+            background: #f0f4ff;
+        }
+
+        .patent-id {
+            font-weight: 600;
+            color: #4f46e5;
+            margin-bottom: 8px;
+        }
+
+        .patent-title {
+            color: #374151;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .search-form {
+            margin-bottom: 30px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 1rem;
+            margin-bottom: 15px;
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .search-btn {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+        }
+
+        .search-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.3);
+        }
+
+        .search-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 30px;
+            color: #6b7280;
+        }
+
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #4f46e5;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+        }
+
+        .answer-section {
+            background: #f0f9ff;
+            border: 1px solid #0ea5e9;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+
+        .answer-text {
+            color: #374151;
+            line-height: 1.6;
+            font-size: 1rem;
+        }
+
+        .confidence-badge {
+            background: #10b981;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 15px;
+        }
+
+        .sources-section {
+            margin-top: 25px;
+        }
+
+        .source-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .source-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .source-info {
+            font-weight: 600;
+            color: #4f46e5;
+        }
+
+        .source-confidence {
+            background: #f3f4f6;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .source-snippet {
+            color: #6b7280;
+            font-style: italic;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .error-message {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .suggestions {
+            margin-top: 15px;
+        }
+
+        .suggestion-chip {
+            display: inline-block;
+            background: #f3f4f6;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            margin: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .suggestion-chip:hover {
+            background: #e5e7eb;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔬 Patent RAG Demo</h1>
+            <p>AI-powered patent document search and question answering</p>
+        </div>
+
+        <div class="main-content">
+            <!-- Patents Section -->
+            <div class="patents-section">
+                <h2 class="section-title">📋 Available Patents</h2>
+                <div id="patents-list">
+                    <!-- Patents will be loaded here -->
+                </div>
+            </div>
+
+            <!-- Search Section -->
+            <div class="search-section">
+                <h2 class="section-title">💬 Ask a Question</h2>
+
+                <div class="error-message" id="error-message"></div>
+
+                <div class="search-form">
+                    <textarea
+                        id="search-input"
+                        class="search-input"
+                        placeholder="Ask any question about the patent content... For example: 'What are the main components of the Fe-Cr-Si steel?'"
+                    ></textarea>
+
+                    <div class="suggestions">
+                        <div class="suggestion-chip" onclick="setQuery('What are the main components of the Fe-Cr-Si steel?')">
+                            Steel components
+                        </div>
+                        <div class="suggestion-chip" onclick="setQuery('What steel composition has the lowest iron loss?')">
+                            Lowest iron loss
+                        </div>
+                        <div class="suggestion-chip" onclick="setQuery('Show me tables with steel composition data')">
+                            Steel composition tables
+                        </div>
+                        <div class="suggestion-chip" onclick="setQuery('What are the magnetic properties described?')">
+                            Magnetic properties
+                        </div>
+                    </div>
+
+                    <button id="search-btn" class="search-btn" onclick="performSearch()">
+                        🔍 Search Patents
+                    </button>
+                </div>
+
+                <!-- Loading State -->
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                    <p>Searching patents and generating answer...</p>
+                </div>
+
+                <!-- Results -->
+                <div class="results" id="results">
+                    <div class="answer-section">
+                        <div class="answer-text" id="answer-text"></div>
+                        <div class="confidence-badge" id="confidence-badge"></div>
+                    </div>
+
+                    <div class="sources-section">
+                        <h3 class="section-title">📚 Sources & Citations</h3>
+                        <div id="sources-list"></div>
+                    </div>
+                </div>
+
+                <!-- Empty State -->
+                <div class="empty-state" id="empty-state">
+                    <p>👆 Select a patent above and ask a question to get started!</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+                <script>
+        const API_ROUTES = {
+          patents: (limit = 10) => `/patents?limit=${limit}`,
+          search: '/search/chunks',
+        };
+
+        let selectedPatent = null;
+
+        async function loadPatents() {
+          try {
+            const response = await fetch(API_ROUTES.patents());
+            if (!response.ok) {
+              throw new Error(`Failed to load patents: ${response.status}`);
+            }
+
+            const patents = await response.json();
+            const patentsList = document.getElementById('patents-list');
+            patentsList.innerHTML = '';
+
+            patents.forEach((patent) => {
+              const patentCard = document.createElement('div');
+              patentCard.className = 'patent-card';
+              patentCard.onclick = () => selectPatent(patent, patentCard);
+
+              const title = patent.title || 'Untitled patent';
+              const summary = patent.summary || title;
+              const totalPages = patent.total_pages && patent.total_pages > 0 ? ` - ${patent.total_pages} pages` : '';
+
+              patentCard.innerHTML = `
+                <div class="patent-id">${patent.patent_id}</div>
+                <div class="patent-title">${summary}${totalPages}</div>
+              `;
+
+              patentsList.appendChild(patentCard);
+            });
+
+            if (patents.length > 0) {
+              selectPatent(patents[0], patentsList.firstElementChild);
+            }
+          } catch (error) {
+            showError('Failed to load patents');
+            console.error('Error loading patents:', error);
+          }
+        }
+
+        function selectPatent(patent, cardElement) {
+          document.querySelectorAll('.patent-card').forEach((card) => {
+            card.classList.remove('selected');
+          });
+
+          cardElement.classList.add('selected');
+          selectedPatent = patent;
+          document.getElementById('empty-state').style.display = 'none';
+        }
+
+        function setQuery(query) {
+          document.getElementById('search-input').value = query;
+        }
+
+        async function performSearch() {
+          const query = document.getElementById('search-input').value.trim();
+
+          if (!query) {
+            showError('Please enter a question');
+            return;
+          }
+
+          if (!selectedPatent) {
+            showError('Please select a patent first');
+            return;
+          }
+
+          showLoading(true);
+          hideError();
+
+          try {
+            const response = await fetch(API_ROUTES.search, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                query,
+                patent_id: selectedPatent.patent_id,
+                top_k: 5,
+              }),
+            });
+
+            if (response.status === 404) {
+              showError('No matching snippets found for this query.');
+              document.getElementById('results').style.display = 'none';
+              return;
+            }
+
+            if (!response.ok) {
+              throw new Error(`Search failed: ${response.status}`);
+            }
+
+            const payload = await response.json();
+            showResults(payload);
+          } catch (error) {
+            showError(`Search failed: ${error.message}`);
+            console.error('Search error:', error);
+          } finally {
+            showLoading(false);
+          }
+        }
+
+        function showResults(response) {
+          const resultsDiv = document.getElementById('results');
+          const answerText = document.getElementById('answer-text');
+          const confidenceBadge = document.getElementById('confidence-badge');
+          const sourcesList = document.getElementById('sources-list');
+
+          if (!response.results || response.results.length === 0) {
+            showError('No results returned for this query.');
+            resultsDiv.style.display = 'none';
+            return;
+          }
+
+          const best = response.results[0];
+          answerText.textContent = best.text || 'No text available.';
+          confidenceBadge.textContent = `Score: ${(best.score ?? 0).toFixed(3)}`;
+
+          sourcesList.innerHTML = '';
+          response.results.forEach((item) => {
+            const sourceCard = document.createElement('div');
+            sourceCard.className = 'source-card';
+
+            sourceCard.innerHTML = `
+              <div class="source-header">
+                <div class="source-info">
+                  ${item.patent_id} | ${item.section_label}
+                </div>
+                <div class="source-confidence">
+                  ${(item.score ?? 0).toFixed(3)}
+                </div>
+              </div>
+              <div class="source-snippet">"${item.text}"</div>
+            `;
+
+            sourcesList.appendChild(sourceCard);
+          });
+
+          resultsDiv.style.display = 'block';
+          document.getElementById('empty-state').style.display = 'none';
+        }
+
+        function showLoading(show) {
+          const loading = document.getElementById('loading');
+          const searchBtn = document.getElementById('search-btn');
+
+          loading.style.display = show ? 'block' : 'none';
+          searchBtn.disabled = show;
+
+          if (show) {
+            document.getElementById('results').style.display = 'none';
+          }
+        }
+
+        function showError(message) {
+          const errorDiv = document.getElementById('error-message');
+          errorDiv.textContent = message;
+          errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+          document.getElementById('error-message').style.display = 'none';
+        }
+
+        document.getElementById('search-input').addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && event.ctrlKey) {
+            performSearch();
+          }
+        });
+
+        window.addEventListener('load', loadPatents);
+      </script>
+</body>
+</html>
+
