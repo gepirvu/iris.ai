@@ -23,6 +23,7 @@ class ClaimRecord(BaseModel):
     text: str
     page_start: int
     page_end: int
+    language: str = "english"
 
 
 class TableRecord(BaseModel):

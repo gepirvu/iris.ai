@@ -86,7 +86,12 @@ def _build_claim_chunks(patent_id: str, claims: List[ClaimRecord]) -> List[Chunk
     for claim in claims:
         chunk_key = f"claim_{patent_id}_{claim.claim_id}"
         chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_key))
-        label = f"Claim {claim.number}" if claim.number else "Claim"
+        # Include language in label for non-English claims
+        if claim.language != "english":
+            language_suffix = f" ({claim.language.capitalize()})"
+            label = f"Claim {claim.number}{language_suffix}" if claim.number else f"Claim{language_suffix}"
+        else:
+            label = f"Claim {claim.number}" if claim.number else "Claim"
 
         chunk = ChunkDocument(
             chunk_id=chunk_id,

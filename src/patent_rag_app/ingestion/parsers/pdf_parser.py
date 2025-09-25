@@ -40,8 +40,17 @@ TABLE_LATTICE_SETTINGS = {
     "min_words_vertical": 1,
     "min_words_horizontal": 1,
 }
-CLAIMS_HEADING_PATTERN = re.compile(r"^\s*(claims?|we\s+claim|what\s+is\s+claimed)\b", re.IGNORECASE)
+CLAIMS_HEADING_PATTERN = re.compile(r"^\s*(claims?|we\s+claim|what\s+is\s+claimed|patentansprüche|revendications)\b", re.IGNORECASE)
 CLAIM_NUMBER_PATTERN = re.compile(r"^(?:claim\s+)?(\d{1,4})[\.)]\s*(.*)", re.IGNORECASE)
+
+# Multi-language section patterns
+GERMAN_CLAIMS_PATTERN = re.compile(r"^\s*patentansprüche\s*$", re.IGNORECASE)
+FRENCH_CLAIMS_PATTERN = re.compile(r"^\s*revendications\s*$", re.IGNORECASE)
+ENGLISH_CLAIMS_PATTERN = re.compile(r"^\s*(claims?|we\s+claim|what\s+is\s+claimed)\s*$", re.IGNORECASE)
+
+# Page header cleanup patterns
+PAGE_HEADER_PATTERN = re.compile(r"^(EP|US|WO)\s+\d+\s+\d+\s+[A-Z]\d+(\s+\d+)*$")
+PAGE_NUMBER_PATTERN = re.compile(r"^\d+$")
 
 
 @dataclass
@@ -313,6 +322,59 @@ class PatentParser:
     def _derive_patent_id(path: Path) -> str:
         return path.stem
 
+    def _clean_patent_text(self, text: str) -> str:
+        """Remove page headers, page numbers, and normalize patent text."""
+        if not text:
+            return text
+
+        lines = text.splitlines()
+        cleaned_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Skip page headers like "EP 1 816 226 B1 13 5 10 15 20 25 30 35 40 45 50 55"
+            if PAGE_HEADER_PATTERN.match(stripped):
+                continue
+
+            # Skip standalone page numbers
+            if PAGE_NUMBER_PATTERN.match(stripped):
+                continue
+
+            # Skip lines with only numbers and spaces (page continuation indicators)
+            if re.match(r"^[\d\s]+$", stripped) and len(stripped.split()) > 3:
+                continue
+
+            cleaned_lines.append(line)
+
+        return "\n".join(cleaned_lines)
+
+    def _detect_claims_language(self, text: str) -> str:
+        """Detect the language of claims section."""
+        text_lower = text.lower().strip()
+
+        # Exact matches first
+        if text_lower == "patentansprüche":
+            return "german"
+        elif text_lower == "revendications":
+            return "french"
+        elif text_lower == "claims":
+            return "english"
+
+        # Partial matches for patterns like "Claims 1. ..."
+        elif text_lower.startswith("patentansprüche"):
+            return "german"
+        elif text_lower.startswith("revendications"):
+            return "french"
+        elif text_lower.startswith("claims"):
+            return "english"
+        elif "patentansprüche" in text_lower:
+            return "german"
+        elif "revendications" in text_lower:
+            return "french"
+        else:
+            return "english"  # Default
+
     def _extract_description_sections(self, pages: List[PageSummary]) -> list[PatentSection]:
         sections: list[PatentSection] = []
         current_paragraph_id: str | None = None
@@ -547,9 +609,13 @@ class PatentParser:
         current_lines: list[str] = []
         start_page: int | None = None
         end_page: int | None = None
+        current_language = "english"  # Track current claims language
 
         for page in pages:
-            lines = [line.rstrip() for line in (page.text or "").splitlines()]
+            # Clean page text to remove headers and page numbers
+            cleaned_text = self._clean_patent_text(page.text or "")
+            lines = [line.rstrip() for line in cleaned_text.splitlines()]
+
             for line in lines:
                 stripped = line.strip()
                 if not stripped:
@@ -557,8 +623,28 @@ class PatentParser:
                         current_lines.append("")
                     continue
 
-                if not in_claims and CLAIMS_HEADING_PATTERN.match(stripped):
+                # Check for claims section headers and detect language
+                if CLAIMS_HEADING_PATTERN.match(stripped):
+                    # If we were already in claims, finalize the previous claim before switching languages
+                    if in_claims and current_number and any(part.strip() for part in current_lines):
+                        claim = self._finalize_claim(
+                            number=current_number,
+                            lines=current_lines,
+                            start_page=start_page or page.page_number,
+                            end_page=end_page or page.page_number,
+                            language=current_language,
+                        )
+                        if claim:
+                            claims.append(claim)
+
+                        # Reset for next language section
+                        current_number = None
+                        current_lines = []
+                        start_page = end_page = None
+
                     in_claims = True
+                    current_language = self._detect_claims_language(stripped)
+                    LOGGER.debug(f"Detected claims language: {current_language}")
                     continue
 
                 if not in_claims:
@@ -589,6 +675,7 @@ class PatentParser:
                             lines=current_lines,
                             start_page=start_page or page.page_number,
                             end_page=end_page or page.page_number,
+                            language=current_language,
                         )
                         if claim:
                             claims.append(claim)
@@ -617,6 +704,7 @@ class PatentParser:
                 lines=current_lines,
                 start_page=start_page or (pages[-1].page_number if pages else 1),
                 end_page=end_page or (pages[-1].page_number if pages else 1),
+                language=current_language,
             )
             if claim:
                 claims.append(claim)
@@ -648,6 +736,7 @@ class PatentParser:
         lines: list[str],
         start_page: int,
         end_page: int,
+        language: str = "english",
     ) -> PatentClaim | None:
         text = self._normalise_claim_text(lines)
         if not text:
@@ -655,11 +744,12 @@ class PatentParser:
         clean_number = number.strip()
         padded = clean_number.zfill(4) if clean_number.isdigit() else clean_number
         return PatentClaim(
-            claim_id=f"claim_{padded}",
+            claim_id=f"claim_{language}_{padded}",
             number=clean_number,
             text=text,
             page_start=start_page,
             page_end=end_page,
+            language=language,
         )
 
     @staticmethod

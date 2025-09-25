@@ -291,6 +291,9 @@
             <!-- Patents Section -->
             <div class="patents-section">
                 <h2 class="section-title">📋 Available Patents</h2>
+                <p style="font-size: 0.9rem; color: #6b7280; margin-bottom: 15px; font-style: italic;">
+                      Click on a patent below to select it for your questions
+                </p>
                 <div id="patents-list">
                     <!-- Patents will be loaded here -->
                 </div>
@@ -310,17 +313,17 @@
                     ></textarea>
 
                     <div class="suggestions">
-                        <div class="suggestion-chip" onclick="setQuery('What are the main components of the Fe-Cr-Si steel?')">
-                            Steel components
+                        <div class="suggestion-chip" onclick="setQuery('What is the application number?')">
+                            Application number
                         </div>
-                        <div class="suggestion-chip" onclick="setQuery('What steel composition has the lowest iron loss?')">
-                            Lowest iron loss
+                        <div class="suggestion-chip" onclick="setQuery('What is the publication date?')">
+                            Publication date
                         </div>
-                        <div class="suggestion-chip" onclick="setQuery('Show me tables with steel composition data')">
-                            Steel composition tables
+                        <div class="suggestion-chip" onclick="setQuery('What are the claims?')">
+                            Claims
                         </div>
-                        <div class="suggestion-chip" onclick="setQuery('What are the magnetic properties described?')">
-                            Magnetic properties
+                        <div class="suggestion-chip" onclick="setQuery('Who are the inventors?')">
+                            Inventors
                         </div>
                     </div>
 
@@ -332,7 +335,7 @@
                     </div>
 
                     <button id="search-btn" class="search-btn" onclick="performSearch()">
-                        🔍 Search Patents
+                        🔍 AMAP - Ask Me About Patents
                     </button>
                 </div>
 
@@ -372,7 +375,7 @@
 
                 <!-- Empty State -->
                 <div class="empty-state" id="empty-state">
-                    <p>👆 Select a patent above and ask a question to get started!</p>
+                    <p> Select a patent above and ask a question to get started!</p>
                 </div>
             </div>
         </div>

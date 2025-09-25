@@ -44,6 +44,7 @@ class PatentIngestor:
                 "text": claim.text,
                 "page_start": claim.page_start,
                 "page_end": claim.page_end,
+                "language": claim.language,
             }
             for claim in document.claims
         ]
