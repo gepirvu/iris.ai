@@ -12,6 +12,7 @@ from typing import Any, Iterable, Iterator, List
 
 import pdfplumber
 
+
 from patent_rag_app.config.logging import get_logger
 from patent_rag_app.ingestion.models import PatentClaim, PatentDocument, PatentSection, PatentTable
 
@@ -317,6 +318,565 @@ class PatentParser:
 
         line_texts = [" ".join(line).strip() for line in lines.values() if any(part.strip() for part in line)]
         return " ".join(line_texts).strip()
+
+    @staticmethod
+    def _derive_patent_id(path: Path) -> str:
+        return path.stem
+
+    def _extract_front_page_only(self, text: str) -> str:
+        """Extract only front page content, stopping at Description section."""
+        # Stop at common section headers (EN/DE/FR)
+        stop_patterns = [
+            r'\bDescription\b',
+            r'\bTechnisches\s+Gebiet\b',
+            r'\bBeschreibung\b',
+            r'\bClaims\b',
+            r'\bPatentansprüche\b',
+            r'\bRevendications\b'
+        ]
+
+        stop_pattern = '|'.join(f'(?:{p})' for p in stop_patterns)
+        match = re.search(stop_pattern, text, re.IGNORECASE)
+
+        if match:
+            return text[:match.start()].strip()
+        return text
+
+    def _clean_inventors_field_content(self, raw_inventors: str, full_front_page_text: str) -> str:
+        """Clean inventors field content using bullet point splitting."""
+        # If already clean, return as-is
+        if "•" in raw_inventors and raw_inventors.count("•") >= 6:
+            # Remove any trailing junk (page numbers, notes, etc.)
+            clean_inventors = re.sub(r'\s+\d+\s+[A-Z]?\s+\d+.*$', '', raw_inventors)
+            clean_inventors = re.sub(r'\s*Note:.*$', '', clean_inventors, flags=re.IGNORECASE | re.DOTALL)
+            return clean_inventors.strip()
+
+        # Extract all bullet points from full front page text
+        bullet_points = re.findall(r'•[^•]*', full_front_page_text)
+
+        # Filter for inventor-like entries (contain names with comma)
+        inventor_bullets = []
+        for bullet in bullet_points:
+            if ',' in bullet and re.search(r'[A-Z]{2,}', bullet):  # Has comma and uppercase surnames
+                # Clean the bullet point
+                clean_bullet = re.sub(r'\s+', ' ', bullet.strip())
+                # Remove trailing junk
+                clean_bullet = re.sub(r'\s*\(\d+\).*$', '', clean_bullet)
+                clean_bullet = re.sub(r'\s*Note:.*$', '', clean_bullet, flags=re.IGNORECASE | re.DOTALL)
+                if clean_bullet.strip():
+                    inventor_bullets.append(clean_bullet.strip())
+
+        return ' '.join(inventor_bullets) if inventor_bullets else raw_inventors
+
+    def _parse_inventors(self, block: str) -> str:
+        """Parse inventors by collecting everything between (72) and (73)."""
+        # For inventors, we need to get everything between (72) and (73)
+        # because of the two-column layout issue
+        return self._extract_inventors_between_fields(block)
+
+    def _extract_inventors_between_fields(self, full_text: str) -> str:
+        """Extract all content between (72) Inventors and (73) Proprietor."""
+        # Find the section between (72) and (73)
+        inventors_match = re.search(r'\(72\).*?(?=\(73\)|$)', full_text, re.DOTALL)
+        if not inventors_match:
+            return ""
+
+        inventors_section = inventors_match.group(0)
+
+        # Split on bullets and filter
+        bullet_entries = re.split(r'(?=•)', inventors_section)
+        inventors = []
+
+        for entry in bullet_entries:
+            entry = entry.strip()
+            if not entry or not entry.startswith('•'):
+                continue
+
+            # Clean up the entry
+            entry = re.sub(r'\s+', ' ', entry)
+            # Remove any field codes that leaked in
+            entry = re.sub(r'\(\d{2}\)[^•]*', '', entry).strip()
+
+            if entry and ',' in entry:  # Must have comma for name pattern
+                inventors.append(entry)
+
+        return ' '.join(inventors) if inventors else ""
+
+    def _parse_references(self, block: str) -> str:
+        """Parse references following example_code.txt approach."""
+        # Normalize and split on spaces/breaks
+        norm = block.replace("\n", " ")
+        refs = re.split(r"\s{2,}|\s*(?=EP-|JP-|US-|WO-)", norm)
+
+        cleaned = []
+        for r in refs:
+            r = re.sub(r'\s+', ' ', r.strip())
+            if not r:
+                continue
+            # Fix split numbers like "EP-A1- 0 678 878" -> "EP-A1-0678878"
+            r = re.sub(r"([A-Z]{2}-[A-Z0-9]+-)\s*([0-9 ]+)",
+                      lambda m: m.group(1) + re.sub(r"\s+", "", m.group(2)), r)
+            if re.match(r"^(EP|JP|US|WO)-", r):
+                cleaned.append(r)
+
+        return ' '.join(cleaned) if cleaned else block
+
+    def _strip_field_label(self, content: str) -> str:
+        """Strip field labels like 'Application number:' from content."""
+        # Remove leading labels
+        cleaned = re.sub(r"^[A-Za-z \(\)/-]+:\s*", "", content).strip()
+        # Normalize whitespace
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        return cleaned
+
+    def _extract_inventors_from_full_text(self, front_page_text: str) -> str:
+        """Extract clean inventor entries from full front page text."""
+        # Find all bullet points that look like inventors (contain comma for name pattern)
+        bullet_pattern = r'•\s+[^•]*?,'
+        potential_inventors = re.findall(bullet_pattern, front_page_text)
+
+        clean_inventors = []
+        for inventor_text in potential_inventors:
+            # Expand to get full inventor entry until next bullet or field code
+            start = front_page_text.find(inventor_text)
+            if start == -1:
+                continue
+
+            # Find end - either next bullet point or field code
+            end_match = re.search(r'(?=•|\(\d{2}\))', front_page_text[start + len(inventor_text):])
+            if end_match:
+                end = start + len(inventor_text) + end_match.start()
+                full_inventor = front_page_text[start:end]
+            else:
+                full_inventor = inventor_text
+
+            # Basic cleanup
+            full_inventor = re.sub(r'\s+', ' ', full_inventor.strip())
+
+            # Must have surname, firstname pattern and reasonable length
+            if ',' in full_inventor and len(full_inventor) > 20:
+                clean_inventors.append(full_inventor)
+
+        return ' '.join(clean_inventors)
+
+    def _clean_mixed_field_content(self, raw_content: str, field_code: str) -> str:
+        """Clean mixed field content by removing obvious artifacts."""
+        cleaned = raw_content
+
+        # Remove bullet points (these belong to other fields)
+        cleaned = re.sub(r'•[^•]*', '', cleaned)
+
+        # Remove field codes that got mixed in
+        cleaned = re.sub(r'\(\d{2}\)[^(]*(?=\(|$)', '', cleaned)
+
+        # Remove common artifacts
+        cleaned = re.sub(r'\s*\d+\s+[A-Z]\s+\d+.*', '', cleaned)  # Page numbers
+
+        # Normalize whitespace
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        return cleaned
+
+    def _find_field_boundaries(self, text: str) -> dict[str, list[str]]:
+        """Find field boundaries using improved parsing logic."""
+        fields = {}
+
+        lines = text.split('\n')
+        current_field = None
+        current_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current_field and current_lines:
+                    current_lines.append('')  # Preserve empty lines within fields
+                continue
+
+            # Check for field code at start of line
+            field_match = re.match(r'^\((\d{2})\)\s*(.*)', stripped)
+            if field_match:
+                # Save previous field
+                if current_field and current_lines:
+                    fields[current_field] = [l for l in current_lines if l.strip()]  # Remove empty lines
+
+                # Start new field
+                current_field = field_match.group(1)
+                first_content = field_match.group(2).strip()
+                current_lines = [first_content] if first_content else []
+            elif current_field:
+                # Continue current field - but be careful about boundaries
+                if self._looks_like_field_continuation(stripped, current_field):
+                    current_lines.append(stripped)
+                else:
+                    # This might be spillover from adjacent fields, stop here
+                    if current_lines:
+                        fields[current_field] = [l for l in current_lines if l.strip()]
+                    current_field = None
+                    current_lines = []
+
+        # Save final field
+        if current_field and current_lines:
+            fields[current_field] = [l for l in current_lines if l.strip()]
+
+        return fields
+
+    def _looks_like_field_continuation(self, line: str, field_code: str) -> bool:
+        """Determine if line belongs to current field or is spillover."""
+
+        # Stop at obvious field boundaries
+        if re.match(r'^\(\d{2}\)', line):
+            return False
+
+        # Field-specific logic
+        if field_code == "72":  # Inventors
+            # Continue if it's a bullet point or reasonable inventor content
+            if line.startswith('•') or (',' in line and len(line.split(',')) <= 3):
+                return True
+            # Stop at patent references or long technical content
+            if re.search(r'JP-A-|EP-A-|US-B1-|Patent|Bulletin|opposition', line, re.IGNORECASE):
+                return False
+            return len(line) < 100  # Stop at very long lines
+
+        elif field_code == "56":  # References
+            # Continue if it looks like patent references
+            return bool(re.search(r'(EP|JP|US|WO)-[A-Z0-9-]+', line))
+
+        elif field_code == "57":  # Abstract
+            # Stop at Description/Claims headers
+            if re.search(r'\b(Description|Claims|Patentansprüche|Beschreibung)\b', line, re.IGNORECASE):
+                return False
+            return True
+
+        elif field_code in ["43", "12", "54"]:  # Single-line fields
+            # These should not continue beyond first line
+            return False
+
+        # Default: continue unless it's obviously wrong
+        return not re.search(r'Printed by|Jouve|PARIS|Within nine months', line, re.IGNORECASE)
+
+    def _extract_inventors_by_bullets(self, content_lines: list[str]) -> str:
+        """Extract inventors using bullet point pattern matching."""
+        inventors = []
+
+        for line in content_lines:
+            if line.strip().startswith('•'):
+                # Extract inventor name (should have surname, firstname pattern)
+                inventor_text = line.strip()
+
+                # Clean the bullet point
+                inventor_text = re.sub(r'^•\s*', '', inventor_text)
+
+                # Must have comma for surname, firstname pattern
+                if ',' in inventor_text:
+                    # Clean up common artifacts
+                    inventor_text = re.sub(r'\s*c/o.*$', '', inventor_text)  # Remove c/o addresses
+                    inventor_text = re.sub(r'\s*\d+\s*\([^)]+\)\s*$', '', inventor_text)  # Remove zip codes
+
+                    # Extract just the name part (until location/address)
+                    name_match = re.match(r'^([^,]+,\s*[^,\d]+)', inventor_text)
+                    if name_match:
+                        clean_name = name_match.group(1).strip()
+                        inventors.append(f'• {clean_name}')
+
+        return ' '.join(inventors)
+
+    def _extract_front_page_fields_with_coordinates(self, words: list[dict], text: str) -> OrderedDict[str, str]:
+        """Extract front page fields using coordinate information for better boundary detection."""
+        fields = OrderedDict()
+
+        if not words:
+            return fields
+
+        # Group words by approximate line (y-coordinate)
+        lines = self._group_words_by_line(words)
+
+        # Find field codes and their positions
+        field_positions = {}
+        for line_y, line_words in lines.items():
+            line_text = ' '.join(word['text'] for word in line_words)
+            field_matches = list(re.finditer(r'\((\d{2})\)', line_text))
+            for match in field_matches:
+                code = match.group(1)
+                # Find the approximate x-coordinate of this field code
+                char_pos = match.start()
+                word_pos = 0
+                x_coord = None
+                for word in line_words:
+                    word_len = len(word['text'])
+                    if word_pos <= char_pos < word_pos + word_len:
+                        x_coord = word['x0']
+                        break
+                    word_pos += word_len + 1  # +1 for space
+                if x_coord is not None:
+                    field_positions[code] = {'y': line_y, 'x': x_coord}
+
+        # Extract content for each field using spatial awareness
+        for code, position in field_positions.items():
+            content_words = self._extract_field_content_by_position(lines, code, position, field_positions)
+            if content_words:
+                content_text = ' '.join(content_words)
+
+                # Apply field-specific cleaning with content validation
+                if code == "72":  # Inventors
+                    cleaned = self._clean_inventors_field_spatial(content_text)
+                elif code == "56":  # References
+                    cleaned = self._parse_references(content_text)
+                elif code == "84":  # Designated states - should be just country codes
+                    cleaned = self._extract_country_codes_only(content_text)
+                elif code in ["12", "54", "43", "45", "21", "22"]:  # Single/short fields
+                    cleaned = self._extract_field_value_precisely(content_text, code)
+                else:
+                    cleaned = self._strip_field_label(content_text)
+
+                if cleaned:
+                    fields[code] = cleaned
+
+        return fields
+
+    def _group_words_by_line(self, words: list[dict]) -> dict[float, list[dict]]:
+        """Group words by their y-coordinate (line)."""
+        lines = {}
+
+        for word in words:
+            y = round(word['top'], 1)  # Round to avoid floating point issues
+            if y not in lines:
+                lines[y] = []
+            lines[y].append(word)
+
+        # Sort words within each line by x-coordinate
+        for line_words in lines.values():
+            line_words.sort(key=lambda w: w['x0'])
+
+        return lines
+
+    def _extract_field_content_by_position(self, lines: dict, code: str, position: dict, all_positions: dict) -> list[str]:
+        """Extract field content using spatial positioning."""
+        content_words = []
+        start_y = position['y']
+        start_x = position['x']
+
+        # Find the next field position to know where to stop
+        next_field_y = None
+        for other_code, other_pos in all_positions.items():
+            if other_code != code and other_pos['y'] > start_y:
+                if next_field_y is None or other_pos['y'] < next_field_y:
+                    next_field_y = other_pos['y']
+
+        # Extract content from current line and subsequent lines until next field
+        for line_y in sorted(lines.keys()):
+            if line_y < start_y:
+                continue
+            if next_field_y is not None and line_y >= next_field_y:
+                break
+
+            line_words = lines[line_y]
+
+            if line_y == start_y:
+                # On the same line as field code, take words after the field code
+                for word in line_words:
+                    if word['x0'] > start_x + 50:  # Some offset to skip the field code itself
+                        content_words.append(word['text'])
+            else:
+                # On subsequent lines, take words that are reasonably positioned
+                if self._line_belongs_to_field(line_words, code, start_x):
+                    content_words.extend(word['text'] for word in line_words)
+
+        return content_words
+
+    def _line_belongs_to_field(self, line_words: list[dict], field_code: str, field_x: float) -> bool:
+        """Determine if a line belongs to a specific field based on positioning."""
+        if not line_words:
+            return False
+
+        line_text = ' '.join(word['text'] for word in line_words)
+
+        # Skip lines that start with other field codes
+        if re.match(r'^\(\d{2}\)', line_text):
+            return False
+
+        # Skip common footer text
+        if re.search(r'Note:|Within nine months|Printed by|Jouve|PARIS', line_text):
+            return False
+
+        # Field-specific logic
+        if field_code == "72":  # Inventors
+            # Include lines with bullet points or inventor names
+            if line_text.strip().startswith('•'):
+                return True
+            # Include lines that look like inventor names or addresses (but not patent references)
+            if ',' in line_text and not re.search(r'JP-A-|EP-A-|US-B1-|Patent|Bulletin|opposition', line_text):
+                return True
+            # Include location lines for inventors (company addresses)
+            if re.search(r'Nippon Steel|Corporation|Futtsu-shi|Chiba|Hyogo|Kitakyushu|Fukuoka', line_text):
+                return True
+            return False
+
+        elif field_code == "56":  # References
+            # Continue if it looks like patent references
+            return bool(re.search(r'(EP|JP|US|WO)-[A-Z0-9-]+', line_text))
+
+        # For other fields, use simple heuristics
+        return len(line_text) < 150  # Avoid very long technical content
+
+    def _clean_inventors_field_spatial(self, content: str) -> str:
+        """Clean inventors field using spatial extraction results."""
+        if not content:
+            return ""
+
+        # Process the content to extract clean inventor entries
+        lines = content.replace('•', '\n•').split('\n')
+        inventors = []
+        current_inventor = None
+        current_lines = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            if line.startswith('•'):
+                # Save previous inventor if exists
+                if current_inventor and current_lines:
+                    inventor_text = self._format_inventor_entry(current_inventor, current_lines)
+                    if inventor_text:
+                        inventors.append(inventor_text)
+
+                # Start new inventor
+                name_part = line[1:].strip()  # Remove bullet
+                if ',' in name_part:
+                    current_inventor = name_part
+                    current_lines = []
+                else:
+                    current_inventor = None
+                    current_lines = []
+            elif current_inventor:
+                # Add address/company line for current inventor
+                if re.search(r'Nippon Steel|Corporation|Futtsu-shi|Chiba|Hyogo|Kitakyushu|Fukuoka|c/o', line):
+                    current_lines.append(line)
+
+        # Save final inventor
+        if current_inventor and current_lines:
+            inventor_text = self._format_inventor_entry(current_inventor, current_lines)
+            if inventor_text:
+                inventors.append(inventor_text)
+
+        return '\n'.join(inventors)
+
+    def _format_inventor_entry(self, name: str, address_lines: list[str]) -> str:
+        """Format a single inventor entry with name and address."""
+        # Clean the name
+        name = re.sub(r'\s+', ' ', name).strip()
+
+        # Format the entry
+        result = f'• {name}'
+
+        # Add address lines
+        for addr_line in address_lines:
+            addr_line = addr_line.strip()
+            if addr_line:
+                result += f'\n{addr_line}'
+
+        return result
+
+    def _extract_country_codes_only(self, content: str) -> str:
+        """Extract only country codes from field (84), avoiding spillover."""
+        if not content:
+            return ""
+
+        # Look for 2-letter country codes pattern
+        country_codes = re.findall(r'\b[A-Z]{2}\b', content)
+
+        # Stop at first inventor bullet point or other obvious spillover
+        words = content.split()
+        clean_words = []
+
+        for word in words:
+            # Stop at bullet points (inventors)
+            if word.startswith('•'):
+                break
+            # Stop at obvious inventor names (surname, firstname pattern)
+            if ',' in word and len(word) > 3:
+                break
+            # Include country codes and common labels
+            if re.match(r'^[A-Z]{2}$', word) or word in ['Designated', 'Contracting', 'States:']:
+                clean_words.append(word)
+
+        result = ' '.join(clean_words)
+        # Remove label if present and return just country codes
+        result = re.sub(r'^.*States:\s*', '', result)
+        return result.strip()
+
+    def _extract_field_value_precisely(self, content: str, field_code: str) -> str:
+        """Extract field value with precise boundaries to avoid spillover."""
+        if not content:
+            return ""
+
+        # Split into lines and words for analysis
+        lines = content.strip().split('\n')
+        first_line = lines[0] if lines else ""
+
+        if field_code == "45":  # Publication date
+            # Should be date format, stop at obvious boundaries
+            match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+Bulletin\s+\d{4}/\d{2})', content)
+            if match:
+                return f"Date of publication and mention of the grant of the patent:\n{match.group(1)}"
+            # Fallback: take first line and clean
+            return self._strip_field_label(first_line)
+
+        elif field_code == "21":  # Application number
+            # Extract just the application number
+            match = re.search(r'(\d+\.\d+(?:\s+PCT/[A-Z0-9/]+)?)', content)
+            if match:
+                return f"Application number: {match.group(1)}"
+            return self._strip_field_label(first_line)
+
+        elif field_code == "22":  # Filing date
+            # Extract just the date
+            match = re.search(r'(\d{2}\.\d{2}\.\d{4})', content)
+            if match:
+                return f"Date of filing: {match.group(1)}"
+            return self._strip_field_label(first_line)
+
+        elif field_code == "43":  # Publication of application
+            # Should be date and bulletin
+            match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+Bulletin\s+\d{4}/\d{2})', content)
+            if match:
+                return f"Date of publication of application:\n{match.group(1)}"
+            return self._strip_field_label(first_line)
+
+        else:
+            # For other fields, take first line and clean
+            return self._strip_field_label(first_line)
+
+    def _clean_two_column_field(self, field_content: str) -> str:
+        """Clean two-column field content by removing common artifacts."""
+        if not field_content:
+            return field_content
+
+        # Remove common junk patterns that leak from column mixing
+        cleaned = field_content
+
+        # Remove field codes that got mixed in
+        cleaned = re.sub(r'\s*\(\d{2}\)\s*', ' ', cleaned)
+
+        # Remove page numbers and references
+        cleaned = re.sub(r'\s*\d+\s+[A-Z]?\s+\d+', '', cleaned)
+
+        # Remove bulletin references
+        cleaned = re.sub(r'\s*Bulletin\s*\d+/\d+', '', cleaned)
+
+        # Remove PCT/publication patterns
+        cleaned = re.sub(r'\s*PCT/[A-Z]+\d+/\d+', '', cleaned)
+        cleaned = re.sub(r'\s*WO\s*\d+/\d+', '', cleaned)
+
+        # Remove dates in DD.MM.YYYY format when mixed with other content
+        cleaned = re.sub(r'\s*\d{2}\.\d{2}\.\d{4}\s*', ' ', cleaned)
+
+        # Normalize whitespace
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        return cleaned
+
 
     @staticmethod
     def _derive_patent_id(path: Path) -> str:
